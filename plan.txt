@@ -1,0 +1,216 @@
+python -m venv .venv
+
+
+Activate it on Windows:
+.venv\Scripts\Activate.ps1
+
+
+Install the dependencies:
+pip install requests python-dotenv
+
+
+Create a .env file:
+TELEGRAM_BOT_TOKEN=put_your_botfather_token_here
+TELEGRAM_CHAT_ID=put_your_personal_chat_id_here
+DELTA_TICKER_URL=https://publicapi.deltaexchange.io/v1/tickers
+
+
+Use the bot token from BotFather, not the bot's username or numeric ID.
+3. Find your Telegram personal chat ID
+1. Open your bot in Telegram and press Start.
+2. Open this URL in your browser, replacing the placeholder with your token:
+   
+   https://api.telegram.org/botYOUR_TOKEN/getUpdates
+3. Look for a message containing "chat":{"id":123456789,...}. That number is your personal chat ID.
+Telegram documents getUpdates for retrieving incoming bot messages and sendMessage for sending a message to a specified chat. 
+
+Telegram
+
+
+
+
+If result is empty, send /start to the bot and refresh. If you have already configured a webhook, getUpdates won't work until the webhook is removed. Keep this URL private because it contains your bot token.
+4. Create bot.py
+This first version will:
+- Fetch Delta Exchange ticker data.
+- Look for PAXG-related market symbols and print matches.
+- Send you a test message with the current price if a supported symbol is found.
+- Monitor downward moves of $2 from the last alert level.
+- Avoid posting anything in the channel.
+
+
+
+import os
+import time
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TICKER_URL = os.getenv(
+    "DELTA_TICKER_URL",
+    "https://publicapi.deltaexchange.io/v1/tickers",
+)
+SYMBOL = os.getenv("DELTA_SYMBOL", "").strip().upper()
+
+POLL_SECONDS = 30
+STEP = 2.0
+
+TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+
+def send_message(text):
+    response = requests.post(
+        f"{TELEGRAM_URL}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text},
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "Telegram error"))
+
+
+def get_tickers():
+    response = requests.get(TICKER_URL, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+
+    # Accommodate common API response wrappers.
+    if isinstance(data, dict) and isinstance(data.get("result"), dict):
+        data = data["result"]
+
+    if not isinstance(data, dict):
+        raise ValueError("Unexpected ticker API response format")
+
+    return data
+
+
+def find_paxg_symbols(tickers):
+    return [
+        key for key in tickers
+        if "PAXG" in key.upper()
+    ]
+
+
+def get_price(tickers, symbol):
+    ticker = tickers.get(symbol)
+
+    if not isinstance(ticker, dict):
+        raise KeyError(
+            f"Symbol {symbol!r} not found in Delta ticker response"
+        )
+
+    price = ticker.get("close") or ticker.get("last")
+
+    if price is None:
+        raise ValueError(f"No last price available for {symbol}")
+
+    return float(price)
+
+
+def main():
+    # Verify that Telegram messaging works before monitoring prices.
+    send_message(
+        "🤖 PAXG price bot is online!\n"
+        "🧪 Private-chat test successful.\n"
+        "📡 Connecting to Delta Exchange..."
+    )
+    print("Telegram test message sent.")
+
+    tickers = get_tickers()
+    candidates = find_paxg_symbols(tickers)
+    print("PAXG-related symbols:", candidates)
+
+    symbol = SYMBOL
+
+    if not symbol:
+        # Select an exact match only; don't guess another market.
+        exact_matches = [
+            key for key in candidates
+            if key.upper() in ("PAXGUSD", "PAXGUSDT")
+        ]
+
+        if len(exact_matches) == 1:
+            symbol = exact_matches[0]
+        else:
+            send_message(
+                "⚠️ Could not select a confirmed PAXG/USD market.\n"
+                f"Matching symbols: {candidates or 'none found'}\n"
+                "Check Delta's available markets before continuing."
+            )
+            print(
+                "Set DELTA_SYMBOL in .env to the exact supported "
+                "market symbol, then restart."
+            )
+            return
+
+    price = get_price(tickers, symbol)
+    next_threshold = price - STEP
+
+    send_message(
+        f"📊 {symbol} price monitoring started\n"
+        f"💰 Current price: ${price:,.2f}\n"
+        f"🔔 First downward alert: ${next_threshold:,.2f}\n"
+        f"⏱ Checking every {POLL_SECONDS} seconds"
+    )
+
+    print(f"Monitoring {symbol} from ${price:.2f}")
+
+    while True:
+        try:
+            time.sleep(POLL_SECONDS)
+            tickers = get_tickers()
+            price = get_price(tickers, symbol)
+
+            print(
+                f"Current: ${price:.2f} | "
+                f"Next alert: ${next_threshold:.2f}"
+            )
+
+            if price <= next_threshold:
+                send_message(
+                    f"📉 {symbol} PRICE ALERT\n\n"
+                    f"💵 Current price: ${price:,.2f}\n"
+                    f"🔻 Downward threshold: ${next_threshold:,.2f}\n"
+                    "⚠️ Price alert only — not a trading instruction."
+                )
+
+                # Advance by $2 per alert, even if price jumps.
+                while price <= next_threshold:
+                    next_threshold -= STEP
+
+        except KeyboardInterrupt:
+            print("Bot stopped.")
+            break
+        except Exception as exc:
+            print(f"Temporary error: {type(exc).__name__}: {exc}")
+            time.sleep(10)
+
+
+if __name__ == "__main__":
+    main()
+One possible issue with the ticker
+The code checks both close and last because ticker schemas can differ. Delta's documented ticker response uses last, and its public API documentation recommends the ticker endpoint for price tracking. 
+
+GitHub
+
+
+
+
+Don't guess the symbol. If the script reports no confirmed market, inspect the listed PAXG-related symbols and the market's actual quote currency. A PAXG/USDT market is not necessarily equivalent to PAXG/USD.
+5. Run the bot
+In your terminal:
+python bot.py
+
+
+You should receive a private message saying the bot is online. If the market symbol is valid, you should then receive a message containing the current price and first alert threshold.
+
+For example, if the initial price is $4,115:
+- First downward alert: $4,113
+- Second downward alert: $4,111
+- Third downward alert: $4,109
+These are illustrative values, not live market prices. This initial implementation tracks downward moves only; we'll add upward alerts, trade-call targets, daily summaries, and polls later.
