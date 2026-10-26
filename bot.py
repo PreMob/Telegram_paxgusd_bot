@@ -35,9 +35,9 @@ else:
 SYMBOL = os.getenv("DELTA_SYMBOL", "").strip().upper()
 
 try:
-    POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
+    POLL_SECONDS = float(os.getenv("POLL_SECONDS", "30"))
 except ValueError:
-    POLL_SECONDS = 30
+    POLL_SECONDS = 30.0
 
 try:
     STEP = float(os.getenv("ALERT_STEP", "2.0"))
@@ -45,6 +45,7 @@ except ValueError:
     STEP = 2.0
 
 TELEGRAM_BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+_last_msg_time = 0.0
 
 
 def log(msg: str):
@@ -54,9 +55,17 @@ def log(msg: str):
 
 
 def send_message(text: str) -> bool:
-    """Send a message to the configured Telegram chat."""
+    """Send a message to the configured Telegram chat with rate-limit protection."""
+    global _last_msg_time
+
     if not BOT_TOKEN or not CHAT_ID:
         raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env")
+
+    # Enforce at least 1.0s gap between messages to comply with Telegram rate limits
+    now = time.time()
+    elapsed = now - _last_msg_time
+    if elapsed < 1.0:
+        time.sleep(1.0 - elapsed)
 
     url = f"{TELEGRAM_BASE_URL}/sendMessage"
     payload = {
@@ -66,19 +75,41 @@ def send_message(text: str) -> bool:
         "disable_web_page_preview": True,
     }
 
-    response = requests.post(url, json=payload, timeout=15)
-    if response.status_code == 401:
-        raise RuntimeError(
-            "Telegram Bot API returned 401 Unauthorized. "
-            "Please check TELEGRAM_BOT_TOKEN in your .env file."
-        )
-    response.raise_for_status()
+    for attempt in range(3):
+        try:
+            response = requests.post(url, json=payload, timeout=15)
 
-    result = response.json()
-    if not result.get("ok"):
-        raise RuntimeError(result.get("description", "Unknown Telegram error"))
+            # Handle Telegram rate limits (HTTP 429)
+            if response.status_code == 429:
+                retry_after = 2
+                try:
+                    retry_after = int(response.json().get("parameters", {}).get("retry_after", 2))
+                except Exception:
+                    pass
+                log(f"Telegram rate limited (429). Retrying after {retry_after}s...")
+                time.sleep(retry_after)
+                continue
 
-    return True
+            if response.status_code == 401:
+                raise RuntimeError(
+                    "Telegram Bot API returned 401 Unauthorized. "
+                    "Please check TELEGRAM_BOT_TOKEN in your .env file."
+                )
+
+            response.raise_for_status()
+            result = response.json()
+            if not result.get("ok"):
+                raise RuntimeError(result.get("description", "Unknown Telegram error"))
+
+            _last_msg_time = time.time()
+            return True
+
+        except requests.RequestException as e:
+            if attempt == 2:
+                raise
+            time.sleep(1)
+
+    return False
 
 
 def get_tickers(ticker_url: str = TICKER_URL) -> dict:
@@ -210,25 +241,27 @@ def main():
             log("Set DELTA_SYMBOL in .env to the exact supported symbol, then restart.")
             sys.exit(1)
 
-    # Step 3: Get initial price and establish baseline threshold
+    # Step 3: Establish initial price and both UP and DOWN thresholds
     try:
         price = get_price(tickers, symbol)
-        next_threshold = price - STEP
+        upper_threshold = price + STEP
+        lower_threshold = price - STEP
     except Exception as exc:
         log(f"Failed to read price for {symbol}: {exc}")
         send_message(f"❌ <b>Error</b>: Could not get initial price for {symbol}: {exc}")
         sys.exit(1)
 
     log(f"Monitoring {symbol} starting at ${price:,.2f}")
-    log(f"First downward alert threshold: ${next_threshold:,.2f}")
+    log(f"Initial Thresholds: 🔻 Lower: ${lower_threshold:,.2f} | 🔺 Upper: ${upper_threshold:,.2f}")
 
     start_notice = (
         f"📊 <b>{symbol} Price Monitoring Active</b>\n\n"
         f"💰 <b>Current Price:</b> ${price:,.2f}\n"
-        f"🔔 <b>First Downward Alert:</b> ${next_threshold:,.2f}\n"
-        f"📉 <b>Alert Step:</b> ${STEP:,.2f}\n"
+        f"🔺 <b>Upper Alert:</b> ${upper_threshold:,.2f} (+${STEP:,.2f})\n"
+        f"🔻 <b>Lower Alert:</b> ${lower_threshold:,.2f} (-${STEP:,.2f})\n"
+        f"📏 <b>Step Size:</b> ${STEP:,.2f}\n"
         f"⏱ <b>Poll Interval:</b> {POLL_SECONDS}s\n\n"
-        f"<i>Bot will alert whenever price drops by ${STEP:,.2f}.</i>"
+        f"<i>Bot will alert on both upward and downward price moves.</i>"
     )
     send_message(start_notice)
 
@@ -239,24 +272,53 @@ def main():
             tickers = get_tickers(TICKER_URL)
             price = get_price(tickers, symbol)
 
-            log(f"{symbol} Current: ${price:,.2f} | Next Alert: ${next_threshold:,.2f}")
+            log(
+                f"{symbol} Current: ${price:,.2f} | "
+                f"🔻 Lower: ${lower_threshold:,.2f} | "
+                f"🔺 Upper: ${upper_threshold:,.2f}"
+            )
 
-            if price <= next_threshold:
+            # Check UPWARD movement
+            if price >= upper_threshold:
+                triggered_level = upper_threshold
+                # Advance upper threshold past the current price
+                while price >= upper_threshold:
+                    upper_threshold += STEP
+                # Set lower threshold at a STEP bracket below the triggered level
+                lower_threshold = upper_threshold - (2 * STEP)
+
                 alert_text = (
-                    f"📉 <b>{symbol} PRICE ALERT</b>\n\n"
+                    f"📈 <b>{symbol} UPWARD ALERT</b>\n\n"
                     f"💵 <b>Current Price:</b> ${price:,.2f}\n"
-                    f"🔻 <b>Downward Threshold:</b> ${next_threshold:,.2f}\n"
+                    f"🔺 <b>Crossed Level:</b> ${triggered_level:,.2f}\n"
+                    f"🎯 <b>Next Targets:</b> 🔺 ${upper_threshold:,.2f} | 🔻 ${lower_threshold:,.2f}\n"
                     f"⏰ <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
                     "⚠️ <i>Price alert only — not a trading instruction.</i>"
                 )
-                log(f"*** ALERT TRIGGERED: Price ${price:,.2f} <= ${next_threshold:,.2f} ***")
+                log(f"*** UP ALERT TRIGGERED: Price ${price:,.2f} >= ${triggered_level:,.2f} ***")
                 send_message(alert_text)
+                log(f"New thresholds: 🔻 ${lower_threshold:,.2f} | 🔺 ${upper_threshold:,.2f}")
 
-                # Advance by STEP per alert, even if price drops significantly
-                while price <= next_threshold:
-                    next_threshold -= STEP
+            # Check DOWNWARD movement
+            elif price <= lower_threshold:
+                triggered_level = lower_threshold
+                # Advance lower threshold down past the current price
+                while price <= lower_threshold:
+                    lower_threshold -= STEP
+                # Set upper threshold at a STEP bracket above the triggered level
+                upper_threshold = lower_threshold + (2 * STEP)
 
-                log(f"New downward alert threshold set to: ${next_threshold:,.2f}")
+                alert_text = (
+                    f"📉 <b>{symbol} DOWNWARD ALERT</b>\n\n"
+                    f"💵 <b>Current Price:</b> ${price:,.2f}\n"
+                    f"🔻 <b>Crossed Level:</b> ${triggered_level:,.2f}\n"
+                    f"🎯 <b>Next Targets:</b> 🔺 ${upper_threshold:,.2f} | 🔻 ${lower_threshold:,.2f}\n"
+                    f"⏰ <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+                    "⚠️ <i>Price alert only — not a trading instruction.</i>"
+                )
+                log(f"*** DOWN ALERT TRIGGERED: Price ${price:,.2f} <= ${triggered_level:,.2f} ***")
+                send_message(alert_text)
+                log(f"New thresholds: 🔻 ${lower_threshold:,.2f} | 🔺 ${upper_threshold:,.2f}")
 
         except KeyboardInterrupt:
             log("Bot stopped by user (KeyboardInterrupt).")
@@ -267,7 +329,7 @@ def main():
             break
         except Exception as exc:
             log(f"Temporary monitoring error: {type(exc).__name__}: {exc}")
-            time.sleep(10)
+            time.sleep(min(POLL_SECONDS * 2, 10))
 
 
 if __name__ == "__main__":
