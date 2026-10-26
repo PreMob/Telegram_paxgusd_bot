@@ -1,155 +1,174 @@
-# PAXG/USD Price Tracking Telegram Bot 🪙📈
+# Telegram Trading Community Platform 📈🤖
 
-An automated Telegram bot that tracks live **PAX Gold (PAXG/USD)** market prices from Delta Exchange and sends instant price alerts directly to your Telegram chat whenever the price moves **UP** or **DOWN** by configured step increments (e.g. $2.00).
+A modular, extensible platform designed to power trading communities with market tracking, signal processing, community engagement, and analytics.
 
----
-
-## 🌟 Key Features
-
-- **Live Market Tracking**: Real-time integration with Delta Exchange's public tickers API.
-- **Bidirectional Price Alerts**:
-  - 📈 **Upward Alerts**: Triggers when price rises above the upper threshold.
-  - 📉 **Downward Alerts**: Triggers when price drops below the lower threshold.
-  - **Dynamic Trailing Bracket**: Continuously repositions the step bracket around current market levels without spamming whipsaws.
-- **Support for Both Regional Markets**:
-  - `PAXGUSD` on **Delta Exchange India** (`https://api.india.delta.exchange/v2/tickers`)
-  - `PAXGUSDT` on **Delta Exchange Global** (`https://api.delta.exchange/v2/tickers`)
-- **Resilient & Robust**:
-  - Handles API retries, network hiccups, and rate limits gracefully.
-  - Telegram HTTP 429 backoff & rate-limit throttling (enforces ≥ 1.0s gap between messages).
-  - Automatic fallback between Delta Exchange endpoints.
-  - Timestamped terminal logs.
-- **Diagnostic Tooling**: Included `test_connection.py` to verify Telegram Bot tokens, chat IDs, and exchange endpoints before launching the continuous runner.
+> **Note on Safety:** Personal trading and order execution modules are strictly decoupled and **disabled by default** (`ENABLE_TRADE_EXECUTION=false`). No exchange trading credentials or order-placement capabilities are active at this stage.
 
 ---
 
-## ⏱️ Polling Rate Limits: How low can `POLL_SECONDS` be?
+## 🏗️ Architecture & Directory Structure
 
-| Setting | Recommendation | Details |
-| :--- | :--- | :--- |
-| `POLL_SECONDS=1` | **Fastest safe for REST** | Works for active real-time tracking during high-volatility sessions. |
-| `POLL_SECONDS=2` - `5` | **Recommended 24/7** | Best balance between low latency, zero IP throttling, and stable continuous operation. |
-| `< 1` (e.g. `0.5`) | **Not recommended over REST** | Delta Exchange tickers REST cache updates every ~500ms–1s anyway. Sub-second polling over HTTP increases latency overhead and risks temporary HTTP 429 / Cloudflare anti-DDoS IP blocks. |
+The project is structured into clear domain boundaries:
 
-> **Note on Telegram Rate Limits:** Telegram restricts bots to sending at most **1 message per second** to an individual private chat. The bot includes automatic message pacing and 429 retry backoff so rapid threshold breaks never crash your bot.
-
----
-
-## 🚀 Quick Start Guide
-
-### 1. Prerequisites
-- **Python 3.10+** installed
-- A Telegram account
-
-### 2. Clone the Repository
-```bash
-git clone https://github.com/PreMob/Telegram_paxgusd_bot.git
-cd Telegram_paxgusd_bot
+```text
+trading-community-platform/
+├── app/
+│   ├── __init__.py
+│   ├── main.py                  # Application foundation entry point
+│   ├── config.py                # Environment-based configuration & validation
+│   ├── logging_config.py        # Reusable structured logging setup
+│   │
+│   ├── integrations/            # External integrations (Telegram, Delta Exchange)
+│   │   └── __init__.py
+│   │
+│   ├── signals/                 # Signal ingestion, parsing & price alert rules
+│   │   └── __init__.py
+│   │
+│   ├── engagement/              # Scheduled community posts, polls & recaps
+│   │   └── __init__.py
+│   │
+│   ├── analytics/               # Signal performance, target hit rate & P&L tracking
+│   │   └── __init__.py
+│   │
+│   ├── database/                # Database models, persistence & migrations
+│   │   └── __init__.py
+│   │
+│   └── trading/                 # Isolated personal trading execution (disabled)
+│       └── __init__.py
+│
+├── tests/                       # Automated test suite
+│   ├── __init__.py
+│   ├── test_config.py
+│   └── test_smoke.py
+│
+├── legacy/                      # Preserved standalone scripts (e.g. PAXG alert prototype)
+│   ├── bot.py
+│   └── test_connection.py
+│
+├── .env.example                 # Configuration template with placeholder values
+├── .gitignore                   # Git exclusion rules for secrets, DBs, sessions & venv
+├── requirements.txt             # Pinned foundation dependencies
+└── README.md                    # Project documentation
 ```
 
-### 3. Create and Activate Virtual Environment (Optional)
-On Windows (PowerShell):
+---
+
+## 🐍 Requirements & Python Version
+
+- **Python Version**: **Python 3.10+** (Tested and verified on Python 3.12.7)
+- **Supported Operating Systems**: Windows, macOS, Linux
+
+---
+
+## 🚀 Environment Setup
+
+### 1. Create the Local Virtual Environment
+
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 ```
 
-On Linux / macOS:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
+### 2. Activate the Virtual Environment
 
-### 4. Install Dependencies
-```bash
+- **On Windows (PowerShell):**
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  ```
+- **On Linux / macOS (Bash/Zsh):**
+  ```bash
+  source .venv/bin/activate
+  ```
+
+### 3. Install Dependencies
+
+```powershell
 pip install -r requirements.txt
 ```
 
-### 5. Setup Telegram Bot & Environment Variables
-
-1. Open Telegram and message [@BotFather](https://t.me/BotFather) to create a new bot:
-   - Send `/newbot`
-   - Follow instructions to choose a name and username.
-   - Copy the API HTTP Token provided by BotFather.
-2. Find your personal Telegram Chat ID:
-   - Open your new bot in Telegram and click **Start** (`/start`).
-   - Open this URL in your web browser (replace `<YOUR_TOKEN>` with your actual bot token):
-     ```
-     https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
-     ```
-   - Locate `"chat":{"id": 123456789}`. That number is your `TELEGRAM_CHAT_ID`.
-3. Create a `.env` file in the project root:
-   ```env
-   TELEGRAM_BOT_TOKEN=your_token_from_botfather
-   TELEGRAM_CHAT_ID=your_chat_id
-   DELTA_TICKER_URL=https://api.india.delta.exchange/v2/tickers
-   DELTA_SYMBOL=PAXGUSD
-   POLL_SECONDS=1
-   ALERT_STEP=2.0
-   ```
-
 ---
 
-## 🔍 Diagnostics & Testing
+## ⚙️ Configuration
 
-Before running the continuous bot, test your configuration:
-```bash
-python test_connection.py
-```
-This tests:
-1. Telegram Bot Token validity (`getMe`)
-2. Telegram Chat messaging (`sendMessage`)
-3. Delta Exchange API ticker fetching and PAXG price extraction
+Copy `.env.example` to `.env` to configure your local settings:
 
----
-
-## 🏃 Running the Bot
-
-Run the bot with:
-```bash
-python bot.py
+```powershell
+Copy-Item .env.example .env
 ```
 
-### Expected Behavior:
-1. The bot sends a test message to your Telegram chat:
-   > 🤖 **PAXG Price Bot is Online!**
-2. It fetches the current PAXG price from Delta Exchange and establishes both alert thresholds:
-   > 📊 **PAXGUSD Price Monitoring Active**  
-   > 💰 Current Price: $4,026.20  
-   > 🔺 Upper Alert: $4,028.20 (+$2.00)  
-   > 🔻 Lower Alert: $4,024.20 (-$2.00)  
-   > ⏱ Poll Interval: 1s
-3. Whenever the price crosses a threshold:
-   - **Upward move**:
-     > 📈 **PAXGUSD UPWARD ALERT**  
-     > 💵 Current Price: $4,028.30  
-     > 🔺 Crossed Level: $4,028.20  
-     > 🎯 Next Targets: 🔺 $4,030.20 \| 🔻 $4,026.20
-   - **Downward move**:
-     > 📉 **PAXGUSD DOWNWARD ALERT**  
-     > 💵 Current Price: $4,024.00  
-     > 🔻 Crossed Level: $4,024.20  
-     > 🎯 Next Targets: 🔺 $4,026.20 \| 🔻 $4,022.20
+Edit `.env` to provide your configuration:
+
+```dotenv
+# Application Environment & Logging
+APP_ENV=development
+LOG_LEVEL=INFO
+TIMEZONE=Asia/Kolkata
+
+# Telegram Bot Credentials (from @BotFather)
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHANNEL_ID=
+TELEGRAM_CHAT_ID=
+
+# Delta Exchange Market Data API
+DELTA_BASE_URL=https://api.india.delta.exchange/v2
+DELTA_SYMBOL=PAXGUSD
+
+# Database Persistence
+DATABASE_URL=sqlite:///./tradebot.db
+
+# Feature Toggles (Safely disabled by default)
+ENABLE_COMMUNITY_BOT=false
+ENABLE_PRICE_ALERTS=false
+ENABLE_TRADE_EXECUTION=false
+```
 
 ---
 
-## ⚙️ Configuration Reference
+## 🏃 Running the Application
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `TELEGRAM_BOT_TOKEN` | API Token from BotFather | *Required* |
-| `TELEGRAM_CHAT_ID` | Telegram user or group chat ID | *Required* |
-| `DELTA_TICKER_URL` | Delta Exchange Tickers API URL | `https://api.india.delta.exchange/v2/tickers` |
-| `DELTA_SYMBOL` | Market symbol to monitor (`PAXGUSD` or `PAXGUSDT`) | `PAXGUSD` |
-| `POLL_SECONDS` | Seconds between market price checks | `1` to `30` |
-| `ALERT_STEP` | Price move amount (in USD) to trigger next alert | `2.0` |
+Run the application foundation using Python module execution:
+
+```powershell
+python -m app.main
+```
+
+### Expected Output:
+```text
+[2026-10-26 22:45:00] [INFO] [app]: ============================================================
+[2026-10-26 22:45:00] [INFO] [app]: Trading Community Platform foundation initialized
+[2026-10-26 22:45:00] [INFO] [app]: Environment: development | Log Level: INFO
+[2026-10-26 22:45:00] [INFO] [app]: Market Symbol: PAXGUSD | Timezone: Asia/Kolkata
+[2026-10-26 22:45:00] [INFO] [app]: Feature Toggles -> Community Bot: False | Price Alerts: False | Trade Execution: False
+[2026-10-26 22:45:00] [INFO] [app]: Foundation ready. No background polling or orders active.
+[2026-10-26 22:45:00] [INFO] [app]: ============================================================
+```
 
 ---
 
-## 🔒 Security Note
-Never commit your `.env` file containing your Telegram Bot Token or personal chat ID to GitHub. The `.gitignore` file is configured to exclude all `.env` files automatically.
+## 🧪 Running Automated Tests
+
+Run the test suite with `pytest`:
+
+```powershell
+pytest
+```
+
+To run with verbose output:
+```powershell
+pytest -v
+```
 
 ---
 
-## 📄 License
-MIT License.
+## 📦 Preserved Legacy Scripts
+
+The earlier standalone PAXG alert prototype and connectivity diagnostics have been preserved under [`legacy/`](file:///c:/Users/pbpan/OneDrive/Desktop/New%20folder/Telegram_bot/legacy):
+- [`legacy/bot.py`](file:///c:/Users/pbpan/OneDrive/Desktop/New%20folder/Telegram_bot/legacy/bot.py): Standalone bidirectional PAXG/USD alert prototype.
+- [`legacy/test_connection.py`](file:///c:/Users/pbpan/OneDrive/Desktop/New%20folder/Telegram_bot/legacy/test_connection.py): Diagnostic connectivity checker for BotFather credentials and Delta Exchange.
+
+---
+
+## 🔒 Security & Secrets Policy
+
+1. `.env` and `.venv/` are excluded by `.gitignore` and **must never be committed**.
+2. Database files (`*.db`), Telegram session files (`*.session`), and cache folders (`.pytest_cache/`, `__pycache__/`) are excluded.
+3. Live order placement and trade execution are disabled by default.

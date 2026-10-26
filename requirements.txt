@@ -1,2 +1,17 @@
-requests>=2.31.0
-python-dotenv>=1.0.0
+# Foundation Dependencies for Trading Community Platform
+
+# Environment & HTTP Networking
+python-dotenv>=1.0.1,<2.0.0
+requests>=2.32.3,<3.0.0
+
+# Telegram Bot API Framework (Foundation)
+python-telegram-bot>=21.6,<22.0.0
+
+# Database Persistence & Models (Foundation)
+SQLAlchemy>=2.0.36,<3.0.0
+
+# Scheduling & Recurring Jobs (Foundation)
+APScheduler>=3.10.4,<4.0.0
+
+# Automated Testing
+pytest>=8.3.3,<9.0.0
